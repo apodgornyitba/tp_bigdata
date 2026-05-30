@@ -1,20 +1,20 @@
-# Cloud Provider Analytics Platform - MVP Técnico Modularizado
+# Cloud Provider Analytics Platform - MVP Técnico
 **Materia:** Big Data - Primer Cuatrimestre 2026 (ITBA)  
 **Proyecto:** Cloud Provider Analytics (ETL + Streaming + Serving en Cassandra)  
 **Entrega:** Segundo Parcial (MVP Técnico)  
 
-### 👥 Integrantes del Grupo
+### Integrantes del Grupo
 *   **Andrés Podgorny** - [apodgorny@itba.edu.ar](mailto:apodgorny@itba.edu.ar)
 *   **María Mercedes Baron** - [mbaron@itba.edu.ar](mailto:mbaron@itba.edu.ar)
 *   **Axel Marcelo Castro Benza** - [acastrobenza@itba.edu.ar](mailto:acastrobenza@itba.edu.ar)
 *   **Lautaro Joaquín Farías** - [lfarias@itba.edu.ar](mailto:lfarias@itba.edu.ar)
 *   **Nicolás Matías Kim** - [nkim@itba.edu.ar](mailto:nkim@itba.edu.ar)
 
-**Estado de la Entrega:** 🚀 **Completado, Modularizado y Verificado End-to-End**
+**Estado de la Entrega:** **Completado, Modularizado y Verificado End-to-End**
 
 ---
 
-## 📋 Tabla de Contenidos
+## Tabla de Contenidos
 1. [Estructura del Proyecto y Modularización](#1-estructura-del-proyecto-y-modularización)
 2. [Diagrama de Arquitectura (Patrón Lambda)](#2-diagrama-de-arquitectura-patrón-lambda)
 3. [Decisiones de Ingeniería y Particiones](#3-decisiones-de-ingeniería-y-particiones)
@@ -112,12 +112,12 @@ graph TD
 
 ## 3. Decisiones de Ingeniería y Particiones
 
-### 🛠️ Justificación de Decisiones
+### Justificación de Decisiones
 *   **Patrón Lambda:** Permite conciliar la analítica near real-time de eventos de uso cloud con procesos batch para datos estáticos y facturación mensual. La capa batch garantiza consistencia absoluta de los datos maestros de las organizaciones, mientras que el pipeline de streaming ingesta eventos de uso continuamente para la serving layer.
 *   **Structured Streaming de PySpark:** Elegido por su tolerancia a fallos, soporte nativo de watermarking y facilidades para realizar deduplicación y manejo de datos tardíos (late data).
 *   **Cassandra como Capa de Serving (AstraDB):** Cassandra es una base de datos NoSQL columnar distribuida que funciona bajo el principio de **Query-First**. Diseñamos la clave primaria compuesta alineada físicamente con las consultas de negocio para evitar costosos table scans en producción.
 
-### 📁 Estrategia de Particionamiento en el Data Lake
+### Estrategia de Particionamiento en el Data Lake
 Para maximizar la eficiencia en Spark y acelerar los tiempos de ejecución de las queries, aplicamos particionamientos lógicos:
 *   **`customers_orgs` (Bronze):** Particionado por `hq_region` (optimiza filtros geográficos).
 *   **`users` (Bronze):** Particionado por `role` (optimiza búsquedas de tipos de usuarios).
