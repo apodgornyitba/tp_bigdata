@@ -1,0 +1,59 @@
+# ==========================================
+# GITIGNORE - Cloud Provider Analytics Project
+# ==========================================
+
+# 1. Virtual Environments (Python)
+venv/
+.venv/
+env/
+ENV/
+bin/
+lib/
+share/
+include/
+pyvenv.cfg
+
+# 2. Python Cache & Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# 3. Big Data Generated Data & Intermediate Storage
+# The processed data directories should not be committed to Git
+datalake/bronze/
+datalake/silver/
+datalake/gold/
+datalake/quarantine/
+checkpoints/
+
+
+# 4. Spark Temporary Warehouse & Metastore
+spark-warehouse/
+metastore_db/
+derby.log
+.spark-notebook/
+
+# 5. IDEs and System Specific Files
+.vscode/
+.idea/
+.project
+.classpath
+.settings/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# 6. Log Files & Diagnostic Outputs
+*.log
+logs/
+
+# 7. Documentation for class
+Docs/
+README.txt
