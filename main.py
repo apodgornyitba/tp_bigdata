@@ -9,6 +9,11 @@ from src.serving import serve_to_cassandra, execute_demo_queries, test_idempoten
 
 def init_spark():
     print("Initializing Spark Session (Modular)...")
+    # Ensure Spark workers use the same virtualenv Python interpreter
+    import sys
+    os.environ["PYSPARK_PYTHON"] = sys.executable
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+    
     spark = SparkSession.builder \
         .appName("CloudProviderAnalyticsPipelineModular") \
         .config("spark.sql.shuffle.partitions", "4") \

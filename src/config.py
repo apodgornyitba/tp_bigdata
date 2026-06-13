@@ -62,6 +62,34 @@ billing_schema = StructType([
     StructField("exchange_rate_to_usd", DoubleType(), True)
 ])
 
+tickets_schema = StructType([
+    StructField("ticket_id", StringType(), False),
+    StructField("org_id", StringType(), True),
+    StructField("category", StringType(), True),
+    StructField("severity", StringType(), True),
+    StructField("created_at", DateType(), True),
+    StructField("resolved_at", DateType(), True),
+    StructField("csat", DoubleType(), True),
+    StructField("sla_breached", BooleanType(), True)
+])
+
+nps_schema = StructType([
+    StructField("org_id", StringType(), False),
+    StructField("survey_date", DateType(), True),
+    StructField("nps_score", DoubleType(), True),
+    StructField("comment", StringType(), True)
+])
+
+marketing_schema = StructType([
+    StructField("touch_id", StringType(), False),
+    StructField("org_id", StringType(), True),
+    StructField("campaign", StringType(), True),
+    StructField("channel", StringType(), True),
+    StructField("timestamp", TimestampType(), True),
+    StructField("clicked", BooleanType(), True),
+    StructField("converted", BooleanType(), True)
+])
+
 # -----------------
 # Usage Event Stream Schema (Bronze Streaming)
 # -----------------
@@ -88,3 +116,5 @@ CASSANDRA_HOSTS = ['127.0.0.1']
 CASSANDRA_PORT = 9042
 CASSANDRA_KEYSPACE = "cloud_analytics"
 CASSANDRA_TABLE = "org_daily_usage_by_service"
+CASSANDRA_TABLE_TICKETS = "tickets_by_org_date"
+CASSANDRA_TABLE_REVENUE = "revenue_by_org_month"

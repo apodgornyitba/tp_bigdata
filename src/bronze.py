@@ -74,6 +74,54 @@ def process_batch_bronze(spark):
         .parquet(f"{config.BRONZE_DIR}/billing_monthly")
     print(f"Ingested billing_monthly. Count: {billing_df.count()}")
 
+    # 5. Support Tickets
+    print("Ingesting support_tickets.csv...")
+    tickets_df = spark.read \
+        .option("header", "true") \
+        .schema(config.tickets_schema) \
+        .csv(f"{config.LANDING_DIR}/support_tickets.csv")
+        
+    tickets_df = tickets_df.withColumn("ingest_ts", current_timestamp()) \
+                           .withColumn("source_file", lit("support_tickets.csv")) \
+                           .dropDuplicates(["ticket_id"])
+                           
+    tickets_df.write.mode("overwrite") \
+        .partitionBy("category") \
+        .parquet(f"{config.BRONZE_DIR}/support_tickets")
+    print(f"Ingested support_tickets. Count: {tickets_df.count()}")
+
+    # 6. NPS Surveys
+    print("Ingesting nps_surveys.csv...")
+    nps_df = spark.read \
+        .option("header", "true") \
+        .schema(config.nps_schema) \
+        .csv(f"{config.LANDING_DIR}/nps_surveys.csv")
+        
+    nps_df = nps_df.withColumn("ingest_ts", current_timestamp()) \
+                   .withColumn("source_file", lit("nps_surveys.csv")) \
+                   .dropDuplicates(["org_id", "survey_date"])
+                   
+    nps_df.write.mode("overwrite") \
+        .parquet(f"{config.BRONZE_DIR}/nps_surveys")
+    print(f"Ingested nps_surveys. Count: {nps_df.count()}")
+
+    # 7. Marketing Touches
+    print("Ingesting marketing_touches.csv...")
+    mkt_df = spark.read \
+        .option("header", "true") \
+        .schema(config.marketing_schema) \
+        .csv(f"{config.LANDING_DIR}/marketing_touches.csv")
+        
+    mkt_df = mkt_df.withColumn("ingest_ts", current_timestamp()) \
+                   .withColumn("source_file", lit("marketing_touches.csv")) \
+                   .dropDuplicates(["touch_id"])
+                   
+    mkt_df.write.mode("overwrite") \
+        .partitionBy("channel") \
+        .parquet(f"{config.BRONZE_DIR}/marketing_touches")
+    print(f"Ingested marketing_touches. Count: {mkt_df.count()}")
+
+
 
 def process_streaming_bronze(spark):
     """
