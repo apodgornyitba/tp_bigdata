@@ -57,3 +57,7 @@ logs/
 # 7. Documentation for class
 Docs/
 README.txt
+
+# 8. AstraDB Security Bundle & Keys (Never commit credentials)
+*secure-connect*.zip
+*.zip

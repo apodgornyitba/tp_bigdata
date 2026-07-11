@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS revenue_by_org_month (
 ) WITH CLUSTERING ORDER BY (month DESC);
 
 
+-- 5. Gold Mart Table: org_profile_analytics (using collections SET, LIST, MAP)
+-- Designed to consolidate organizational profiles and avoid joins in serving queries.
+-- PRIMARY KEY:
+-- - Partition Key: org_id (fast direct access to organization profile).
+CREATE TABLE IF NOT EXISTS org_profile_analytics (
+    org_id text,
+    org_name text,
+    plan_tier text,
+    active_user_roles set<text>,                 -- SET collection (unique active roles)
+    recent_nps_comments list<text>,              -- LIST collection (chronological order comments)
+    service_accumulated_costs map<text, double>, -- MAP collection (key: service, val: total cost)
+    PRIMARY KEY (org_id)
+);
+
+
 -- ==========================================
 -- MANDATORY DEMO QUERIES (AstraDB / Cassandra)
 -- ==========================================
@@ -103,4 +118,12 @@ SELECT org_id, service, usage_date, total_genai_tokens, total_cost_usd
 FROM org_daily_usage_by_service
 WHERE org_id = 'org_c11ertj5'
   AND service = 'genai';
+
+
+-- Additional Query: Organization Profile Analytics (leveraging NoSQL collections SET, LIST, MAP)
+-- Example: Get consolidated profile with collections for 'org_c11ertj5'
+SELECT org_name, plan_tier, active_user_roles, recent_nps_comments, service_accumulated_costs
+FROM org_profile_analytics
+WHERE org_id = 'org_c11ertj5';
+
 

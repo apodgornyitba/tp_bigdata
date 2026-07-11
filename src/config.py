@@ -118,3 +118,26 @@ CASSANDRA_KEYSPACE = "cloud_analytics"
 CASSANDRA_TABLE = "org_daily_usage_by_service"
 CASSANDRA_TABLE_TICKETS = "tickets_by_org_date"
 CASSANDRA_TABLE_REVENUE = "revenue_by_org_month"
+CASSANDRA_TABLE_PROFILE = "org_profile_analytics"
+
+# -----------------
+# AstraDB Settings (Loaded dynamically from environment or .env file)
+# -----------------
+import os
+
+def _load_env_file():
+    # Attempt to load a local .env file manually if present
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ[key.strip()] = val.strip().strip('"').strip("'")
+
+_load_env_file()
+
+ASTRA_DB_CLIENT_ID = os.environ.get("ASTRA_DB_CLIENT_ID", "token")
+ASTRA_DB_CLIENT_SECRET = os.environ.get("ASTRA_DB_CLIENT_SECRET", None)
+ASTRA_DB_SECURE_CONNECT_BUNDLE = os.environ.get("ASTRA_DB_SECURE_CONNECT_BUNDLE", None)

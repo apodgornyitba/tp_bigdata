@@ -1,5 +1,8 @@
 # Gold Layer FinOps Mart Aggregation Module
-from pyspark.sql.functions import sum as _sum, round as _round, col, count as _count, avg as _avg, when, lit
+from pyspark.sql.functions import (
+    sum as _sum, round as _round, col, count as _count, avg as _avg, when, lit,
+    collect_set, collect_list, struct, map_from_entries
+)
 from src import config
 
 def process_gold(spark):
@@ -74,6 +77,36 @@ def process_gold(spark):
         
     anomaly_df.write.mode("overwrite").parquet(f"{config.GOLD_DIR}/cost_anomaly_mart")
     print(f"Gold Cost Anomaly Mart count: {anomaly_df.count()}")
+
+    # 6. Organization Profile Analytics (with collections: set, list, map)
+    print("Aggregating organization profiles with collections (roles, comments, costs)...")
+    
+    users_df = spark.read.parquet(f"{config.BRONZE_DIR}/users")
+    roles_df = users_df.filter(col("role").isNotNull()) \
+        .groupBy("org_id") \
+        .agg(collect_set("role").alias("active_user_roles"))
+        
+    nps_df = spark.read.parquet(f"{config.SILVER_DIR}/nps_surveys")
+    comments_df = nps_df.filter(col("comment").isNotNull() & (col("comment") != "")) \
+        .groupBy("org_id") \
+        .agg(collect_list("comment").alias("recent_nps_comments"))
+        
+    org_service_cost = gold_df.groupBy("org_id", "service") \
+        .agg(_round(_sum("total_cost_usd"), 4).alias("service_cost"))
+        
+    costs_map_df = org_service_cost.groupBy("org_id") \
+        .agg(map_from_entries(collect_list(struct("service", "service_cost"))).alias("service_accumulated_costs"))
+        
+    orgs_df = spark.read.parquet(f"{config.BRONZE_DIR}/customers_orgs")
+    orgs_base = orgs_df.select("org_id", "org_name", "plan_tier")
+    
+    profile_df = orgs_base \
+        .join(roles_df, "org_id", "left") \
+        .join(comments_df, "org_id", "left") \
+        .join(costs_map_df, "org_id", "left")
+        
+    profile_df.write.mode("overwrite").parquet(f"{config.GOLD_DIR}/org_profile_analytics")
+    print(f"Gold Organization Profile Mart (org_profile_analytics) count: {profile_df.count()}")
 
     return gold_df
 

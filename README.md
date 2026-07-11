@@ -60,14 +60,39 @@ pip install pyspark cassandra-driver pandas pyarrow
 ```
 
 ### Paso 3: Ejecutar el Pipeline de Datos
-Para correr el pipeline de forma correcta usando las librerías del entorno virtual:
+
+El pipeline puede ejecutarse en dos modos distintos para la capa de Serving: **Modo Cassandra Local** o **Modo AstraDB (Cassandra Cloud)**.
+
+#### A. Modo Cassandra Local (Por defecto)
+Si no se configuran variables de AstraDB, el pipeline correrá contra la base de datos Cassandra local en Docker. 
+Para ejecutar el pipeline:
 ```bash
-# Opción A (Estando dentro del entorno activado):
+# Estando dentro del entorno virtual activado:
 python main.py
 
-# Opción B (Desde cualquier terminal en el directorio raíz):
+# O bien directamente usando el path del intérprete:
 venv/bin/python main.py
 ```
+
+#### B. Modo AstraDB (Cassandra Cloud)
+Para desviar el serving hacia AstraDB, debes configurar un archivo de entorno `.env` en la raíz del proyecto. Este archivo contiene las credenciales seguras.
+
+1. **Crear base de datos en AstraDB:**
+   * Crea una base de datos en [AstraDB](https://astra.datastax.com/) eligiendo la opción **Serverless (non-vector)**.
+   * Crea un Keyspace llamado `cloud_analytics`.
+2. **Descargar y guardar el Secure Connect Bundle (SCB):**
+   * En la pestaña **Connect** de tu base de datos en AstraDB, descarga el archivo zip del bundle.
+   * Guarda este archivo zip en la raíz del proyecto con el nombre exacto: `secure-connect-tp-bigdata.zip`.
+3. **Configurar el archivo `.env`:**
+   * Crea un archivo llamado `.env` en la raíz de la carpeta del proyecto y completa tus credenciales de AstraDB:
+     ```env
+     ASTRA_DB_CLIENT_ID="token"
+     ASTRA_DB_CLIENT_SECRET="AstraCS:tu-client-secret-aqui..."
+     ASTRA_DB_SECURE_CONNECT_BUNDLE="/path/to/tp_bigdata/secure-connect-tp-bigdata.zip"
+     ```
+4. **Ejecutar el Pipeline:**
+   * Ejecuta el pipeline usando `python main.py`. El código detectará de forma automatica el archivo `.env`, cargará las credenciales y conectará de forma optimizada y asíncrona directamente a AstraDB en la nube.
+
 ---
 
 ## 1. Estructura del Proyecto y Modularización
@@ -82,13 +107,14 @@ tp_bigdata/
 ├── venv/                              # Entorno virtual de Python
 ├── main.py                            # Orquestador del pipeline (Punto de entrada de ejecución)
 ├── cql_queries.cql                    # Scripts CQL de base de datos Cassandra
+├── .env                               # Archivo de entorno local para credenciales de AstraDB (excluido de Git)
 ├── src/                               # Módulos del pipeline
 │   ├── __init__.py                    # Inicializador de paquete Python
-│   ├── config.py                      # Configuración, rutas y esquemas explícitos de Spark
+│   ├── config.py                      # Configuración, rutas y esquemas explícitos de Spark (y cargador de .env)
 │   ├── bronze.py                      # Ingesta Batch y Streaming a Bronze
 │   ├── silver.py                      # Conformance, enriquecimiento de datos y desvío a Quarantine
-│   ├── gold.py                        # Generación de todos los marts analíticos (FinOps, Soporte y GenAI)
-│   └── serving.py                     # Serving distribuido en Cassandra, las 5 consultas e idempotencia
+│   ├── gold.py                        # Generación de todos los marts analíticos (incluyendo colecciones NoSQL)
+│   └── serving.py                     # Serving distribuido y asíncrono en Cassandra/AstraDB
 └── README.md                          # Este documento explicativo
 ```
 
@@ -223,7 +249,7 @@ Para el flag de anomalías en Silver, implementamos el algoritmo de **Rango Inte
 
 ## 5. Diseño Query-First en Cassandra
 
-Modelamos la serving layer con **3 tablas** específicas para responder a las consultas analíticas del negocio en tiempo récord:
+Modelamos la serving layer con **4 tablas** específicas para responder a las consultas analíticas del negocio en tiempo récord y cumplir con la rúbrica de evaluación (empleo de colecciones NoSQL):
 
 ```sql
 CREATE KEYSPACE IF NOT EXISTS cloud_analytics
@@ -266,6 +292,17 @@ CREATE TABLE IF NOT EXISTS revenue_by_org_month (
     net_revenue_usd double,
     PRIMARY KEY ((org_id), month)
 ) WITH CLUSTERING ORDER BY (month DESC);
+
+-- Tabla 4: Organization Profile Analytics (Colecciones NoSQL: SET, LIST, MAP)
+CREATE TABLE IF NOT EXISTS org_profile_analytics (
+    org_id text,
+    org_name text,
+    plan_tier text,
+    active_user_roles set<text>,                 -- SET (Colección de roles activos únicos)
+    recent_nps_comments list<text>,              -- LIST (Colección de comentarios NPS)
+    service_accumulated_costs map<text, double>, -- MAP (Colección servicio -> costo acumulado)
+    PRIMARY KEY (org_id)
+);
 ```
 
 ---
@@ -393,6 +430,15 @@ Date         | Total GenAI Tokens   | Total Cost (USD)
 ... (mostrando las primeras 5 filas)
 ```
 
+#### Consulta Adicional: Analítica de Perfil de Organización (Colecciones NoSQL SET, LIST, MAP):
+```
+Organization Name:                Apex Cloud 17
+Plan Tier:                        pro
+Active User Roles (SET):          SortedSet(['admin', 'analyst', 'data_engineer', 'developer', 'devops', 'ml_engineer'])
+Recent NPS Comments (LIST):       ['Missing features']
+Service Accumulated Costs (MAP):  {'compute': 834.01, 'database': 642.57, 'genai': 1174.46, 'storage': 199.24}
+```
+
 ---
 
 ## 7. Verificación de Idempotencia
@@ -404,6 +450,7 @@ Record counts before re-running ingestion:
  - org_daily_usage_by_service: 12109
  - tickets_by_org_date: 944
  - revenue_by_org_month: 240
+ - org_profile_analytics: 80
 
 Re-running Gold to Cassandra loading...
 Distributed loading to Cassandra completed successfully.
@@ -412,6 +459,7 @@ Record counts after re-running ingestion:
  - org_daily_usage_by_service: 12109
  - tickets_by_org_date: 944
  - revenue_by_org_month: 240
+ - org_profile_analytics: 80
 
 SUCCESS: Idempotency OK! All table counts remain unchanged after re-run.
 === MODULAR PIPELINE COMPLETED SUCCESSFULLY ===

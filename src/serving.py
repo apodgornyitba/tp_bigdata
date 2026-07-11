@@ -1,24 +1,52 @@
 # Cassandra serving layer logic, demo queries, and idempotency checks
 from datetime import datetime
-from cassandra.cluster import Cluster
 from src import config
+
+def get_cassandra_connection(keyspace=None):
+    """
+    Get a Cassandra cluster and session, using AstraDB if configured,
+    otherwise falling back to local Cassandra.
+    """
+    from cassandra.cluster import Cluster
+    from cassandra.auth import PlainTextAuthProvider
+    from src import config
+    
+    if config.ASTRA_DB_SECURE_CONNECT_BUNDLE and config.ASTRA_DB_CLIENT_SECRET:
+        print("Connecting to AstraDB using Secure Connect Bundle...")
+        cloud_config = {
+            'secure_connect_bundle': config.ASTRA_DB_SECURE_CONNECT_BUNDLE
+        }
+        username = config.ASTRA_DB_CLIENT_ID if config.ASTRA_DB_CLIENT_ID else 'token'
+        auth_provider = PlainTextAuthProvider(username, config.ASTRA_DB_CLIENT_SECRET)
+        cluster = Cluster(cloud=cloud_config, auth_provider=auth_provider)
+    else:
+        # Fallback to local Cassandra
+        print(f"Connecting to local Cassandra at {config.CASSANDRA_HOSTS}:{config.CASSANDRA_PORT}...")
+        cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
+        
+    session = cluster.connect(keyspace) if keyspace else cluster.connect()
+    return cluster, session
+
 
 def serve_to_cassandra(spark, gold_df=None):
     """
-    Connect to Cassandra, create schema, and load Gold data.
+    Connect to Cassandra/AstraDB, create schemas, and load Gold data.
     """
     print("\n--- Phase 5: Serving in Cassandra (AstraDB/Local) ---")
     
-    # 1. Create Keyspace and Tables from Driver
-    cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-    session = cluster.connect()
+    # 1. Create Keyspace and Tables
+    cluster, session = get_cassandra_connection()
     
-    print(f"Creating keyspace '{config.CASSANDRA_KEYSPACE}'...")
-    session.execute(f"""
-        CREATE KEYSPACE IF NOT EXISTS {config.CASSANDRA_KEYSPACE}
-        WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}};
-    """)
-    session.set_keyspace(config.CASSANDRA_KEYSPACE)
+    if config.ASTRA_DB_SECURE_CONNECT_BUNDLE and config.ASTRA_DB_CLIENT_SECRET:
+        print(f"AstraDB mode: Setting keyspace to '{config.CASSANDRA_KEYSPACE}'...")
+        session.set_keyspace(config.CASSANDRA_KEYSPACE)
+    else:
+        print(f"Creating keyspace '{config.CASSANDRA_KEYSPACE}'...")
+        session.execute(f"""
+            CREATE KEYSPACE IF NOT EXISTS {config.CASSANDRA_KEYSPACE}
+            WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}};
+        """)
+        session.set_keyspace(config.CASSANDRA_KEYSPACE)
     
     # Table 1: Daily Usage by Org and Service
     print(f"Creating query-first table '{config.CASSANDRA_TABLE}'...")
@@ -64,10 +92,24 @@ def serve_to_cassandra(spark, gold_df=None):
             PRIMARY KEY ((org_id), month)
         ) WITH CLUSTERING ORDER BY (month DESC);
     """)
+
+    # Table 4: Organization Profile Analytics (leveraging NoSQL collections)
+    print(f"Creating query-first table with collections '{config.CASSANDRA_TABLE_PROFILE}'...")
+    session.execute(f"""
+        CREATE TABLE IF NOT EXISTS {config.CASSANDRA_TABLE_PROFILE} (
+            org_id text,
+            org_name text,
+            plan_tier text,
+            active_user_roles set<text>,
+            recent_nps_comments list<text>,
+            service_accumulated_costs map<text, double>,
+            PRIMARY KEY (org_id)
+        );
+    """)
     
     cluster.shutdown()
 
-    # 2. Distributed Load using foreachPartition to executors (Option B)
+    # 2. Distributed Load using foreachPartition to executors
     
     # A. Ingest org_daily_usage_by_service
     if gold_df is None:
@@ -75,21 +117,22 @@ def serve_to_cassandra(spark, gold_df=None):
     print(f"Loading {config.CASSANDRA_TABLE} distributedly via executors (foreachPartition)...")
     
     def load_usage_partition(partition):
-        from cassandra.cluster import Cluster
+        from src.serving import get_cassandra_connection
+        from src import config
         from datetime import datetime
-        cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-        session = cluster.connect(config.CASSANDRA_KEYSPACE)
+        cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
         insert_stmt = session.prepare(f"""
             INSERT INTO {config.CASSANDRA_TABLE} (
                 org_id, service, usage_date, total_cost_usd, total_requests,
                 total_cpu_hours, total_storage_gb_hours, total_genai_tokens, total_carbon_kg
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
+        futures = []
         for row in partition:
             u_date = row['usage_date']
             if isinstance(u_date, str):
                 u_date = datetime.strptime(u_date, "%Y-%m-%d").date()
-            session.execute(insert_stmt, (
+            future = session.execute_async(insert_stmt, (
                 row['org_id'],
                 row['service'],
                 u_date,
@@ -100,6 +143,13 @@ def serve_to_cassandra(spark, gold_df=None):
                 int(row['total_genai_tokens']) if row['total_genai_tokens'] is not None else 0,
                 float(row['total_carbon_kg']) if row['total_carbon_kg'] is not None else 0.0
             ))
+            futures.append(future)
+            if len(futures) >= 500:
+                for f in futures:
+                    f.result()
+                futures = []
+        for f in futures:
+            f.result()
         cluster.shutdown()
 
     gold_df.foreachPartition(load_usage_partition)
@@ -109,20 +159,21 @@ def serve_to_cassandra(spark, gold_df=None):
     tickets_gold_df = spark.read.parquet(f"{config.GOLD_DIR}/tickets_by_org_date")
     
     def load_tickets_partition(partition):
-        from cassandra.cluster import Cluster
+        from src.serving import get_cassandra_connection
+        from src import config
         from datetime import datetime
-        cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-        session = cluster.connect(config.CASSANDRA_KEYSPACE)
+        cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
         insert_stmt = session.prepare(f"""
             INSERT INTO {config.CASSANDRA_TABLE_TICKETS} (
                 org_id, ticket_date, total_tickets, critical_tickets_count, avg_csat, sla_breach_rate
             ) VALUES (?, ?, ?, ?, ?, ?)
         """)
+        futures = []
         for row in partition:
             t_date = row['ticket_date']
             if isinstance(t_date, str):
                 t_date = datetime.strptime(t_date, "%Y-%m-%d").date()
-            session.execute(insert_stmt, (
+            future = session.execute_async(insert_stmt, (
                 row['org_id'],
                 t_date,
                 int(row['total_tickets']) if row['total_tickets'] is not None else 0,
@@ -130,6 +181,13 @@ def serve_to_cassandra(spark, gold_df=None):
                 float(row['avg_csat']) if row['avg_csat'] is not None else 0.0,
                 float(row['sla_breach_rate']) if row['sla_breach_rate'] is not None else 0.0
             ))
+            futures.append(future)
+            if len(futures) >= 500:
+                for f in futures:
+                    f.result()
+                futures = []
+        for f in futures:
+            f.result()
         cluster.shutdown()
 
     tickets_gold_df.foreachPartition(load_tickets_partition)
@@ -139,20 +197,21 @@ def serve_to_cassandra(spark, gold_df=None):
     revenue_gold_df = spark.read.parquet(f"{config.GOLD_DIR}/revenue_by_org_month")
     
     def load_revenue_partition(partition):
-        from cassandra.cluster import Cluster
+        from src.serving import get_cassandra_connection
+        from src import config
         from datetime import datetime
-        cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-        session = cluster.connect(config.CASSANDRA_KEYSPACE)
+        cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
         insert_stmt = session.prepare(f"""
             INSERT INTO {config.CASSANDRA_TABLE_REVENUE} (
                 org_id, month, total_subtotal_usd, total_credits_usd, total_taxes_usd, net_revenue_usd
             ) VALUES (?, ?, ?, ?, ?, ?)
         """)
+        futures = []
         for row in partition:
             m_date = row['month']
             if isinstance(m_date, str):
                 m_date = datetime.strptime(m_date, "%Y-%m-%d").date()
-            session.execute(insert_stmt, (
+            future = session.execute_async(insert_stmt, (
                 row['org_id'],
                 m_date,
                 float(row['total_subtotal_usd']) if row['total_subtotal_usd'] is not None else 0.0,
@@ -160,19 +219,65 @@ def serve_to_cassandra(spark, gold_df=None):
                 float(row['total_taxes_usd']) if row['total_taxes_usd'] is not None else 0.0,
                 float(row['net_revenue_usd']) if row['net_revenue_usd'] is not None else 0.0
             ))
+            futures.append(future)
+            if len(futures) >= 500:
+                for f in futures:
+                    f.result()
+                futures = []
+        for f in futures:
+            f.result()
         cluster.shutdown()
 
     revenue_gold_df.foreachPartition(load_revenue_partition)
+
+    # D. Ingest org_profile_analytics (with Collections)
+    print(f"Loading {config.CASSANDRA_TABLE_PROFILE} distributedly via executors (foreachPartition)...")
+    profile_gold_df = spark.read.parquet(f"{config.GOLD_DIR}/org_profile_analytics")
+    
+    def load_profile_partition(partition):
+        from src.serving import get_cassandra_connection
+        from src import config
+        cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
+        insert_stmt = session.prepare(f"""
+            INSERT INTO {config.CASSANDRA_TABLE_PROFILE} (
+                org_id, org_name, plan_tier, active_user_roles, recent_nps_comments, service_accumulated_costs
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """)
+        futures = []
+        for row in partition:
+            roles_set = set(row['active_user_roles']) if row['active_user_roles'] is not None else set()
+            comments_list = list(row['recent_nps_comments']) if row['recent_nps_comments'] is not None else []
+            costs_map = {k: float(v) for k, v in row['service_accumulated_costs'].items()} if row['service_accumulated_costs'] is not None else {}
+            
+            future = session.execute_async(insert_stmt, (
+                row['org_id'],
+                row['org_name'],
+                row['plan_tier'],
+                roles_set,
+                comments_list,
+                costs_map
+            ))
+            futures.append(future)
+            if len(futures) >= 500:
+                for f in futures:
+                    f.result()
+                futures = []
+        for f in futures:
+            f.result()
+        cluster.shutdown()
+
+    profile_gold_df.foreachPartition(load_profile_partition)
+    
     print("Distributed loading to Cassandra completed successfully.")
+
 
 
 def execute_demo_queries():
     """
-    Execute all 5 mandatory queries from Cassandra to verify the model.
+    Execute all mandatory queries from Cassandra to verify the model.
     """
     print("\n--- Phase 6: Executing Demo Queries ---")
-    cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-    session = cluster.connect(config.CASSANDRA_KEYSPACE)
+    cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
     
     # Pick a sample org_id that exists in the database
     res = session.execute(f"SELECT org_id, service FROM {config.CASSANDRA_TABLE} LIMIT 1;")
@@ -276,6 +381,23 @@ def execute_demo_queries():
         if row_count >= 10:
             print("... (showing top 10 rows)")
             break
+
+    # Additional Query: Organization Profile Analytics (leveraging NoSQL collections)
+    print(f"\n[Additional Query] Organization Profile Analytics for Org: '{sample_org}' (leveraging SET, LIST, MAP collections):")
+    query_profile_stmt = session.prepare(f"""
+        SELECT org_name, plan_tier, active_user_roles, recent_nps_comments, service_accumulated_costs
+        FROM {config.CASSANDRA_TABLE_PROFILE}
+        WHERE org_id = ?
+    """)
+    profile_rows = session.execute(query_profile_stmt, [sample_org])
+    for r in profile_rows:
+        print(f"Organization Name:                {r.org_name}")
+        print(f"Plan Tier:                        {r.plan_tier}")
+        print(f"Active User Roles (SET):          {r.active_user_roles}")
+        print(f"Recent NPS Comments (LIST):       {r.recent_nps_comments}")
+        # Format map output for readability
+        formatted_costs = {k: round(v, 2) for k, v in r.service_accumulated_costs.items()}
+        print(f"Service Accumulated Costs (MAP):  {formatted_costs}")
         
     cluster.shutdown()
 
@@ -285,18 +407,19 @@ def test_idempotency(spark):
     Verify that re-running the load doesn't cause record counts to grow (upsert logic).
     """
     print("\n--- Phase 7: Verification of Idempotency ---")
-    cluster = Cluster(config.CASSANDRA_HOSTS, port=config.CASSANDRA_PORT)
-    session = cluster.connect(config.CASSANDRA_KEYSPACE)
+    cluster, session = get_cassandra_connection(config.CASSANDRA_KEYSPACE)
     
     # 1. Counts before
     count_usage_before = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE};").one()[0]
     count_tickets_before = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_TICKETS};").one()[0]
     count_revenue_before = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_REVENUE};").one()[0]
+    count_profile_before = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_PROFILE};").one()[0]
     
     print("Record counts before re-running ingestion:")
     print(f" - {config.CASSANDRA_TABLE}: {count_usage_before}")
     print(f" - {config.CASSANDRA_TABLE_TICKETS}: {count_tickets_before}")
     print(f" - {config.CASSANDRA_TABLE_REVENUE}: {count_revenue_before}")
+    print(f" - {config.CASSANDRA_TABLE_PROFILE}: {count_profile_before}")
     
     # 2. Re-run
     print("\nRe-running Gold to Cassandra loading...")
@@ -306,16 +429,19 @@ def test_idempotency(spark):
     count_usage_after = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE};").one()[0]
     count_tickets_after = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_TICKETS};").one()[0]
     count_revenue_after = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_REVENUE};").one()[0]
+    count_profile_after = session.execute(f"SELECT COUNT(*) FROM {config.CASSANDRA_TABLE_PROFILE};").one()[0]
     
     print("\nRecord counts after re-running ingestion:")
     print(f" - {config.CASSANDRA_TABLE}: {count_usage_after}")
     print(f" - {config.CASSANDRA_TABLE_TICKETS}: {count_tickets_after}")
     print(f" - {config.CASSANDRA_TABLE_REVENUE}: {count_revenue_after}")
+    print(f" - {config.CASSANDRA_TABLE_PROFILE}: {count_profile_after}")
     
     # Validate
     if (count_usage_before == count_usage_after and 
         count_tickets_before == count_tickets_after and 
-        count_revenue_before == count_revenue_after):
+        count_revenue_before == count_revenue_after and
+        count_profile_before == count_profile_after):
         print("\nSUCCESS: Idempotency OK! All table counts remain unchanged after re-run.")
     else:
         print("\nWARNING: Counts changed! Check Cassandra composite key definitions and upsert logic.")
